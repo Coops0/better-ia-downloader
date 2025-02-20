@@ -1,0 +1,16 @@
+[package]
+name = "better-ia-downloader"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.95"
+clap = { version = "4.5.30", features = ["derive"] }
+crc32fast = "1.4.2"
+futures = "0.3.31"
+indicatif = { version = "0.17.11", features = ["tokio"] }
+quick-xml = { version = "0.37.2", features = ["serialize"] }
+regex-lite = "0.1.6"
+reqwest = { version = "0.12.12", features = ["stream"]}
+serde = { version = "1.0.217", features = ["derive"] }
+tokio = { version = "1.43.0", features = ["full"] }
