@@ -43,7 +43,7 @@ async fn main() -> anyhow::Result<()> {
     let mut args = Args::parse();
 
     if args.download_directory == "auto" {
-        args.download_directory = args.resource_name.clone();
+        args.download_directory.clone_from(&args.resource_name);
     }
 
     let _ = tokio::fs::create_dir_all(&args.download_directory).await;
@@ -66,7 +66,7 @@ async fn main() -> anyhow::Result<()> {
 
         let diff = before - files.len();
         if diff != 0 {
-            println!("filtered out {diff} duplicates");
+            println!("Filtered out {diff} duplicates");
         }
     }
 
@@ -76,7 +76,7 @@ async fn main() -> anyhow::Result<()> {
 
         let diff = before - files.len();
         if diff != 0 {
-            println!("filtered out {diff} derivatives");
+            println!("Filtered out {diff} derivatives");
         }
     }
 
@@ -89,13 +89,11 @@ async fn main() -> anyhow::Result<()> {
 
         let diff = before - files.len();
         if diff != 0 {
-            println!("filtered out {diff} files based on filter");
+            println!("Filtered out {diff} files based on filter");
         }
     }
 
-    let total_size = files.iter()
-        .map(|f| f.size.unwrap_or(0))
-        .sum();
+    let total_size = files.iter().map(|f| f.size.unwrap_or(0)).sum();
 
     println!("Downloading {} files with a total size of {}", files.len(), HumanBytes(total_size));
 
@@ -108,10 +106,12 @@ async fn main() -> anyhow::Result<()> {
         .template("{spinner.blue} [{elapsed_precise}] Files [{bar:40.cyan/blue}] {pos}/{len}")?
         .progress_chars("#>-");
 
-    let global_pb = ProgressBar::new(files.len() as u64).with_style(global_sty).with_message("Files");
+    let global_pb =
+        ProgressBar::new(files.len() as u64).with_style(global_sty).with_message("Files");
 
     let mut task_group = JoinSet::new();
 
+    // Remainder will be accounted for by last thread
     let chunk_size = files.len() / args.threads;
 
     // SAFETY: `args` will NEVER be dropped before the entire program ends, after all threads have exited
@@ -125,7 +125,7 @@ async fn main() -> anyhow::Result<()> {
         }
 
         let local_global_pb = ProgressBar::clone(&global_pb);
-        let mut pb = mpb.add(ProgressBar::no_length().with_style(sty.clone()));
+        let pb = mpb.add(ProgressBar::no_length().with_style(sty.clone()));
         task_group.spawn(async move {
             let client = Client::builder()
                 .pool_idle_timeout(None)
@@ -140,11 +140,11 @@ async fn main() -> anyhow::Result<()> {
                 let t = &file.name;
                 pb.set_message(t.trim().to_owned());
 
-                match download_file(args_r, &file, &mut pb, &client)
+                match download_file(args_r, &file, &pb, &client)
                     .await
                 {
-                    Err(e) => pb.println(format!("failed to download {t}: {e:?}")),
-                    Ok(()) => pb.println(format!("downloaded {t}"))
+                    Err(e) => pb.println(format!("Failed to download {t}: {e:?}")),
+                    Ok(()) => pb.println(format!("Downloaded {t}"))
                 }
 
                 pb.tick();
@@ -157,17 +157,17 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    // Add at end
+    // Make sure is last pb
     let global_pb = mpb.add(global_pb);
     global_pb.tick();
 
     while let Some(t) = task_group.join_next().await {
         if let Err(why) = t {
-            println!("task failed: {why:?}",);
+            println!("Thread failed: {why:?}",);
         }
     }
 
-    global_pb.finish_with_message("all downloads complete");
+    global_pb.finish_with_message("All downloads complete");
     global_pb.tick();
 
     Ok(())
@@ -201,9 +201,9 @@ async fn check_hash(open_file: &mut tokio::fs::File, meta: &File) -> anyhow::Res
 
         if b == 0 {
             break;
-        } else {
-            hasher.update(&buf[..b]);
         }
+
+        hasher.update(&buf[..b]);
     }
 
     let local_crc32 = format!("{:x}", hasher.finalize());
@@ -223,7 +223,7 @@ async fn check_hash(open_file: &mut tokio::fs::File, meta: &File) -> anyhow::Res
 async fn download_file(
     args: &Args,
     file: &File,
-    pb: &mut ProgressBar,
+    pb: &ProgressBar,
     client: &Client
 ) -> anyhow::Result<()> {
     let path = Path::new(&args.download_directory).join(&file.name);
@@ -231,11 +231,11 @@ async fn download_file(
         if let Ok(mut open_file) = tokio::fs::File::open(&path).await {
             match check_hash(&mut open_file, file).await {
                 Ok(FileCheck::Ok) => {
-                    pb.println(format!("local hash & size match => skipping {}", file.name));
+                    pb.println(format!("Local hash & size match => skipping {}", file.name));
                     return Ok(());
                 }
                 Err(why) => pb.println(format!(
-                    "failed to check local hash for {} {why:?}, redownloading",
+                    "Failed to check local hash for {} {why:?}, redownloading",
                     file.name
                 )),
                 Ok(why) => pb.println(format!("{why:?} mismatch for {}, redownloading", file.name))
@@ -256,12 +256,12 @@ async fn download_file(
             break;
         };
 
-        pb.println(format!("failed to download {}: {why:?}", file.name));
+        pb.println(format!("Failed to download {}: {why:?}", file.name));
         if i == args.retries - 1 {
             return Err(unsafe { response.unwrap_err_unchecked() });
-        } else {
-            tokio::time::sleep(Duration::from_secs(2)).await;
         }
+
+        tokio::time::sleep(Duration::from_secs(2)).await;
     }
 
     let response = unsafe { response.unwrap_unchecked() };

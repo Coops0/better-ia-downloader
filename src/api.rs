@@ -9,16 +9,6 @@ pub struct FilesXml {
 
 #[derive(Debug, Deserialize)]
 pub struct File {
-    // #[serde(rename = "@format")]
-    // pub format: Option<Format>,
-
-    // #[serde(rename = "@original")]
-    // pub original: Option<String>,
-
-    // #[serde(rename = "@mtime")]
-    // pub epoch_creation_date: Option<u64>,
-
-    #[serde(rename = "size")]
     pub size: Option<u64>,
 
     #[serde(rename = "@md5")]
@@ -35,31 +25,6 @@ pub struct File {
 
     #[serde(rename = "@source")]
     pub source: Source
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Format {
-    #[serde(rename = "Archive BitTorrent")]
-    ArchiveBitTorrent,
-
-    #[serde(rename = "h.264 IA")]
-    H264Ia,
-
-    #[serde(rename = "Item Tile")]
-    ItemTile,
-
-    #[serde(rename = "Metadata")]
-    Metadata,
-
-    #[serde(rename = "MPEG4")]
-    Mpeg4,
-
-    #[serde(rename = "Thumbnail")]
-    Thumbnail,
-
-    #[serde(other)]
-    Other
 }
 
 #[derive(Debug, Deserialize, PartialEq, Eq)]
