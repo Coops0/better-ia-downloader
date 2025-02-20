@@ -17,3 +17,6 @@ Options:
   -f <FILTER>                  Regex to mach against file names to determine what to download
   -h, --help                   Print help
 ```
+
+### todo
+- (optional) egui interface

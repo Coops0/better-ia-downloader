@@ -1,12 +1,12 @@
-use crate::api::{File, FilesXml, Source};
+use crate::api::{FileMeta, FilesXml, Source};
 use anyhow::{anyhow, Context};
 use clap::Parser;
 use futures::StreamExt;
 use indicatif::{HumanBytes, MultiProgress, ProgressBar, ProgressStyle};
 use reqwest::{redirect::Policy, Client, Response};
-use std::{path::Path, str::FromStr, time::Duration};
+use std::{path::Path, str::FromStr, sync::Arc, time::Duration};
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt}, task::JoinSet
+    fs::File, io::{AsyncReadExt, AsyncWriteExt, BufWriter}, task::JoinSet
 };
 
 mod api;
@@ -35,7 +35,10 @@ struct Args {
     retries: usize,
     /// Regex to mach against file names to determine what to download
     #[clap(short = 'f')]
-    filter: Option<String>
+    filter: Option<String>,
+    /// Skip validation of file hashes and sizes to prevent redownloading already downloaded files
+    #[clap(long = "no-check", default_value_t = false)]
+    no_check: bool
 }
 
 #[tokio::main]
@@ -103,8 +106,7 @@ async fn main() -> anyhow::Result<()> {
         .progress_chars("#>-");
 
     let global_sty = ProgressStyle::default_bar()
-        .template("{spinner.blue} [{elapsed_precise}] Files [{bar:40.cyan/blue}] {pos}/{len}")?
-        .progress_chars("#>-");
+        .template("{spinner.blue} [{elapsed_precise}] Files [{bar:80.cyan/blue}] {pos}/{len}")?;
 
     let global_pb =
         ProgressBar::new(files.len() as u64).with_style(global_sty).with_message("Files");
@@ -113,6 +115,21 @@ async fn main() -> anyhow::Result<()> {
 
     // Remainder will be accounted for by last thread
     let chunk_size = files.len() / args.threads;
+
+    let client = Arc::new(Client::builder()
+        .pool_idle_timeout(None)
+        .tcp_nodelay(true)
+        // .http2_prior_knowledge()
+        .pool_idle_timeout(None)
+        .redirect(Policy::limited(15))
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3")
+        .build()
+        .expect("failed to build client"));
+
+    let mut chunked_workloads: Vec<Vec<FileMeta>> = Vec::with_capacity(args.threads);
+    for (i, file) in files.into_iter().enumerate() {
+        chunked_workloads[i % args.threads].push(file);
+    }
 
     // SAFETY: `args` will NEVER be dropped before the entire program ends, after all threads have exited
     let args_r: &'static Args = unsafe { std::mem::transmute(&args) };
@@ -126,23 +143,16 @@ async fn main() -> anyhow::Result<()> {
 
         let local_global_pb = ProgressBar::clone(&global_pb);
         let pb = mpb.add(ProgressBar::no_length().with_style(sty.clone()));
-        task_group.spawn(async move {
-            let client = Client::builder()
-                .pool_idle_timeout(None)
-                .redirect(Policy::limited(15))
-                .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3")
-                .build()
-                .expect("failed to build client");
+        let client = Arc::clone(&client);
 
+        task_group.spawn(async move {
             for file in chunk {
                 pb.reset();
 
                 let t = &file.name;
                 pb.set_message(t.trim().to_owned());
 
-                match download_file(args_r, &file, &pb, &client)
-                    .await
-                {
+                match download_file(args_r, &file, &pb, &client).await {
                     Err(e) => pb.println(format!("Failed to download {t}: {e:?}")),
                     Ok(()) => pb.println(format!("Downloaded {t}"))
                 }
@@ -187,26 +197,27 @@ enum FileCheck {
     Ok
 }
 
-async fn check_hash(open_file: &mut tokio::fs::File, meta: &File) -> anyhow::Result<FileCheck> {
+async fn check_hash(open_file: &mut File, meta: &FileMeta) -> anyhow::Result<FileCheck> {
     let Some(server_crc32) = &meta.crc32 else { return Ok(FileCheck::BadMetadata) };
 
     let mut hasher = crc32fast::Hasher::new();
 
     let mut size = 0;
-    let mut buf = [0; 4096];
+    let mut buf = vec![0; 64 * 1024];
 
     loop {
         let b = open_file.read(&mut buf).await?;
-        size += b;
-
         if b == 0 {
             break;
         }
 
+        size += b;
         hasher.update(&buf[..b]);
     }
 
     let local_crc32 = format!("{:x}", hasher.finalize());
+    drop(buf);
+
     if server_crc32 != &local_crc32 {
         return Ok(FileCheck::HashMismatch);
     }
@@ -222,23 +233,23 @@ async fn check_hash(open_file: &mut tokio::fs::File, meta: &File) -> anyhow::Res
 
 async fn download_file(
     args: &Args,
-    file: &File,
+    meta: &FileMeta,
     pb: &ProgressBar,
     client: &Client
 ) -> anyhow::Result<()> {
-    let path = Path::new(&args.download_directory).join(&file.name);
-    if path.exists() {
-        if let Ok(mut open_file) = tokio::fs::File::open(&path).await {
-            match check_hash(&mut open_file, file).await {
+    let path = Path::new(&args.download_directory).join(&meta.name);
+    if !args.no_check && path.exists() {
+        if let Ok(mut open_file) = File::open(&path).await {
+            match check_hash(&mut open_file, meta).await {
                 Ok(FileCheck::Ok) => {
-                    pb.println(format!("Local hash & size match => skipping {}", file.name));
+                    pb.println(format!("Local hash & size match => skipping {}", meta.name));
                     return Ok(());
                 }
                 Err(why) => pb.println(format!(
                     "Failed to check local hash for {} {why:?}, redownloading",
-                    file.name
+                    meta.name
                 )),
-                Ok(why) => pb.println(format!("{why:?} mismatch for {}, redownloading", file.name))
+                Ok(why) => pb.println(format!("{why:?} mismatch for {}, redownloading", meta.name))
             }
         }
     }
@@ -247,7 +258,7 @@ async fn download_file(
         let _ = tokio::fs::create_dir_all(p).await;
     }
 
-    let url = format!("{BASE}/download/{}/{}", args.resource_name, file.name);
+    let url = format!("{BASE}/download/{}/{}", args.resource_name, meta.name);
     let mut response: Result<Response, anyhow::Error> = Err(anyhow!("UNREACHABLE"));
     for i in 0..args.retries {
         response = client.get(&url).send().await.map_err(Into::into);
@@ -256,7 +267,7 @@ async fn download_file(
             break;
         };
 
-        pb.println(format!("Failed to download {}: {why:?}", file.name));
+        pb.println(format!("Failed to download {}: {why:?}", meta.name));
         if i == args.retries - 1 {
             return Err(unsafe { response.unwrap_err_unchecked() });
         }
@@ -270,7 +281,16 @@ async fn download_file(
         pb.set_length(content_length);
     }
 
-    let mut file = tokio::fs::File::create(&path).await?;
+    let file = File::options()
+        .write(true)
+        .read(false)
+        .create(true)
+        .truncate(true)
+        .open(&path)
+        .await?;
+
+    let mut writer = BufWriter::new(file);
+
     let mut stream = response.bytes_stream();
 
     while let Some(chunk) = stream.next().await {
@@ -278,12 +298,12 @@ async fn download_file(
 
         pb.tick();
 
-        tokio::io::copy(&mut &chunk[..], &mut file).await?;
+        writer.write_all(&chunk).await?;
 
         pb.inc(chunk.len() as u64);
     }
 
-    file.flush().await?;
+    writer.flush().await?;
 
     Ok(())
 }

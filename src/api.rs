@@ -4,11 +4,11 @@ use serde::Deserialize;
 #[serde(rename_all = "lowercase")]
 pub struct FilesXml {
     #[serde(rename = "file", default)]
-    pub files: Vec<File>
+    pub files: Vec<FileMeta>
 }
 
 #[derive(Debug, Deserialize)]
-pub struct File {
+pub struct FileMeta {
     pub size: Option<u64>,
 
     #[serde(rename = "@md5")]
