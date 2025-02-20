@@ -18,7 +18,7 @@ struct Args {
     /// Resource name to download files from IA
     resource_name: String,
     /// Skip duplicate files based on file signatures
-    #[clap(long = "sd", default_value_t = true)]
+    #[clap(long = "sd", default_value_t = false)]
     skip_duplicates: bool,
     /// Remove any files marked as derivatives by IA
     #[clap(long = "rd", default_value_t = false)]
@@ -53,7 +53,7 @@ async fn main() -> anyhow::Result<()> {
     spinner.enable_steady_tick(Duration::from_millis(100));
 
     let mut files = fetch_files(&args).await?.files;
-    
+
     spinner.finish_and_clear();
 
     // files.sort_by_key(|file| file.epoch_creation_date);
@@ -96,8 +96,6 @@ async fn main() -> anyhow::Result<()> {
     let total_size = files.iter()
         .map(|f| f.size.unwrap_or(0))
         .sum();
-
-    println!("{total_size}");
 
     println!("Downloading {} files with a total size of {}", files.len(), HumanBytes(total_size));
 

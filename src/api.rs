@@ -18,7 +18,7 @@ pub struct File {
     // #[serde(rename = "@mtime")]
     // pub epoch_creation_date: Option<u64>,
 
-    #[serde(rename = "@size")]
+    #[serde(rename = "size")]
     pub size: Option<u64>,
 
     #[serde(rename = "@md5")]
