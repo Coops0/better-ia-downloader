@@ -11,13 +11,13 @@ pub struct FilesXml {
 pub struct FileMeta {
     pub size: Option<u64>,
 
-    #[serde(rename = "@md5")]
+    #[serde(rename = "md5")]
     pub md5: Option<String>,
 
-    #[serde(rename = "@crc32")]
+    #[serde(rename = "crc32")]
     pub crc32: Option<String>,
 
-    #[serde(rename = "@sha1")]
+    #[serde(rename = "sha1")]
     pub sha1: Option<String>,
 
     #[serde(rename = "@name")]

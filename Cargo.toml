@@ -1,10 +1,10 @@
 [package]
 name = "better-ia-downloader"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
-anyhow = "1.0.95"
+anyhow = "1.0.96"
 clap = { version = "4.5.30", features = ["derive"] }
 crc32fast = "1.4.2"
 futures = "0.3.31"
@@ -12,8 +12,9 @@ indicatif = { version = "0.17.11", features = ["tokio"] }
 quick-xml = { version = "0.37.2", features = ["serialize"] }
 regex-lite = "0.1.6"
 reqwest = { version = "0.12.12", features = ["stream"]}
-serde = { version = "1.0.217", features = ["derive"] }
+serde = { version = "1.0.218", features = ["derive"] }
 tokio = { version = "1.43.0", features = ["full"] }
+color-print = "0.3.7"
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }
@@ -128,6 +129,7 @@ verbose_bit_mask = "warn"
 verbose_file_reads = "warn"
 zero_sized_map_values = "warn"
 too_many_lines = "allow"
+struct_excessive_bools = "allow"
 
 [lints.rust]
 warnings = "warn"

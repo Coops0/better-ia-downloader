@@ -1,6 +1,7 @@
 use crate::api::{FileMeta, FilesXml, Source};
 use anyhow::{anyhow, Context};
 use clap::Parser;
+use color_print::{cformat, cprintln};
 use futures::StreamExt;
 use indicatif::{HumanBytes, MultiProgress, ProgressBar, ProgressStyle};
 use reqwest::{redirect::Policy, Client, Response};
@@ -38,7 +39,10 @@ struct Args {
     filter: Option<String>,
     /// Skip validation of file hashes and sizes to prevent redownloading already downloaded files
     #[clap(long = "no-check", default_value_t = false)]
-    no_check: bool
+    no_check: bool,
+    /// Print extra information
+    #[clap(long = "verbose", short = 'v', default_value_t = false)]
+    verbose: bool
 }
 
 #[tokio::main]
@@ -52,7 +56,7 @@ async fn main() -> anyhow::Result<()> {
     let _ = tokio::fs::create_dir_all(&args.download_directory).await;
 
     let spinner = ProgressBar::new_spinner()
-        .with_message(format!("Fetching files for {}", args.resource_name));
+        .with_message(cformat!("<blue>Fetching files for {}</>", args.resource_name));
     spinner.enable_steady_tick(Duration::from_millis(100));
 
     let mut files = fetch_files(&args).await?.files;
@@ -69,7 +73,7 @@ async fn main() -> anyhow::Result<()> {
 
         let diff = before - files.len();
         if diff != 0 {
-            println!("Filtered out {diff} duplicates");
+            cprintln!("<cyan>Filtered out {diff} duplicates</>");
         }
     }
 
@@ -79,7 +83,7 @@ async fn main() -> anyhow::Result<()> {
 
         let diff = before - files.len();
         if diff != 0 {
-            println!("Filtered out {diff} derivatives");
+            cprintln!("<cyan>Filtered out {diff} derivatives</>");
         }
     }
 
@@ -92,13 +96,17 @@ async fn main() -> anyhow::Result<()> {
 
         let diff = before - files.len();
         if diff != 0 {
-            println!("Filtered out {diff} files based on filter");
+            cprintln!("<cyan>Filtered out {diff} files based on filter</cyan>");
         }
     }
 
     let total_size = files.iter().map(|f| f.size.unwrap_or(0)).sum();
 
-    println!("Downloading {} files with a total size of {}", files.len(), HumanBytes(total_size));
+    cprintln!(
+        "<blue>Downloading {} files with a total size of {}</>",
+        files.len(),
+        HumanBytes(total_size)
+    );
 
     let mpb = MultiProgress::new();
     let sty = ProgressStyle::default_bar()
@@ -107,26 +115,23 @@ async fn main() -> anyhow::Result<()> {
 
     let global_sty = ProgressStyle::default_bar()
         .template("{spinner.blue} [{elapsed_precise}] Files [{bar:80.cyan/blue}] {pos}/{len}")?;
-
     let global_pb =
         ProgressBar::new(files.len() as u64).with_style(global_sty).with_message("Files");
 
     let mut task_group = JoinSet::new();
 
-    // Remainder will be accounted for by last thread
-    let chunk_size = files.len() / args.threads;
-
     let client = Arc::new(Client::builder()
         .pool_idle_timeout(None)
         .tcp_nodelay(true)
-        // .http2_prior_knowledge()
         .pool_idle_timeout(None)
         .redirect(Policy::limited(15))
         .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3")
         .build()
         .expect("failed to build client"));
 
-    let mut chunked_workloads: Vec<Vec<FileMeta>> = Vec::with_capacity(args.threads);
+    let mut chunked_workloads: Vec<Vec<FileMeta>> =
+        std::iter::repeat_with(Vec::new).take(args.threads).collect();
+
     for (i, file) in files.into_iter().enumerate() {
         chunked_workloads[i % args.threads].push(file);
     }
@@ -134,13 +139,7 @@ async fn main() -> anyhow::Result<()> {
     // SAFETY: `args` will NEVER be dropped before the entire program ends, after all threads have exited
     let args_r: &'static Args = unsafe { std::mem::transmute(&args) };
 
-    for i in 0..args.threads {
-        let mut chunk = files.drain(..chunk_size).collect::<Vec<_>>();
-
-        if i == args.threads - 1 {
-            chunk.append(&mut files);
-        }
-
+    for chunk in chunked_workloads {
         let local_global_pb = ProgressBar::clone(&global_pb);
         let pb = mpb.add(ProgressBar::no_length().with_style(sty.clone()));
         let client = Arc::clone(&client);
@@ -149,18 +148,21 @@ async fn main() -> anyhow::Result<()> {
             for file in chunk {
                 pb.reset();
 
-                let t = &file.name;
-                pb.set_message(t.trim().to_owned());
+                let t = &file.name.trim().to_owned();
+                pb.set_message(t.clone());
 
                 match download_file(args_r, &file, &pb, &client).await {
-                    Err(e) => pb.println(format!("Failed to download {t}: {e:?}")),
-                    Ok(()) => pb.println(format!("Downloaded {t}"))
+                    Err(e) => pb.println(cformat!("<red>Failed to download {t}: {e:?}</>")),
+                    Ok(()) => {
+                        if args.verbose {
+                            pb.println(cformat!("<bright-magenta>Downloaded {t}</>"));
+                        }
+                    }
                 }
 
                 pb.tick();
 
                 local_global_pb.inc(1);
-                local_global_pb.tick();
             }
 
             pb.finish_and_clear();
@@ -170,15 +172,15 @@ async fn main() -> anyhow::Result<()> {
     // Make sure is last pb
     let global_pb = mpb.add(global_pb);
     global_pb.tick();
+    global_pb.enable_steady_tick(Duration::from_millis(500));
 
     while let Some(t) = task_group.join_next().await {
         if let Err(why) = t {
-            println!("Thread failed: {why:?}",);
+            cprintln!("<red>Thread failed: {why:?}</>");
         }
     }
 
     global_pb.finish_with_message("All downloads complete");
-    global_pb.tick();
 
     Ok(())
 }
@@ -240,16 +242,25 @@ async fn download_file(
     let path = Path::new(&args.download_directory).join(&meta.name);
     if !args.no_check && path.exists() {
         if let Ok(mut open_file) = File::open(&path).await {
-            match check_hash(&mut open_file, meta).await {
+            let message = match check_hash(&mut open_file, meta).await {
                 Ok(FileCheck::Ok) => {
-                    pb.println(format!("Local hash & size match => skipping {}", meta.name));
+                    if args.verbose {
+                        pb.println(cformat!(
+                            "<green>Local hash & size match => skipping {}</>",
+                            meta.name
+                        ));
+                    }
                     return Ok(());
                 }
-                Err(why) => pb.println(format!(
-                    "Failed to check local hash for {} {why:?}, redownloading",
+                Err(why) => cformat!(
+                    "<yellow>Failed to check local hash for {} {why:?}, redownloading</>",
                     meta.name
-                )),
-                Ok(why) => pb.println(format!("{why:?} mismatch for {}, redownloading", meta.name))
+                ),
+                Ok(why) => cformat!("<yellow>{why:?} mismatch for {}, redownloading</>", meta.name)
+            };
+
+            if args.verbose {
+                pb.println(message);
             }
         }
     }
@@ -263,11 +274,9 @@ async fn download_file(
     for i in 0..args.retries {
         response = client.get(&url).send().await.map_err(Into::into);
 
-        let Err(why) = &response else {
-            break;
-        };
+        let Err(why) = &response else { break };
 
-        pb.println(format!("Failed to download {}: {why:?}", meta.name));
+        pb.println(cformat!("<red>Failed to download {}: {why:?}</>", meta.name));
         if i == args.retries - 1 {
             return Err(unsafe { response.unwrap_err_unchecked() });
         }
@@ -281,18 +290,12 @@ async fn download_file(
         pb.set_length(content_length);
     }
 
-    let file = File::options()
-        .write(true)
-        .read(false)
-        .create(true)
-        .truncate(true)
-        .open(&path)
-        .await?;
+    let file =
+        File::options().write(true).read(false).create(true).truncate(true).open(&path).await?;
 
     let mut writer = BufWriter::new(file);
 
     let mut stream = response.bytes_stream();
-
     while let Some(chunk) = stream.next().await {
         let chunk = chunk?;
 
